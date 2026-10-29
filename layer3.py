@@ -9,13 +9,15 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
-MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3.8-flash"
+# Flash Lite: 3.8 Flash timed out or returned 503 on every free-tier call (2026-10-29).
+MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash-lite"
 NAMES = {
     "^GSPC": "S&P 500", "AAPL": "Apple stock", "MSFT": "Microsoft stock", "NVDA": "Nvidia stock",
     "AMZN": "Amazon stock", "GOOGL": "Alphabet Google stock", "JPM": "JPMorgan stock",
@@ -92,7 +94,18 @@ def parse(text):
     return p, re.sub(r"[^\w\s.,%:;()'/+-]", "", str(d.get("reason", "")))[:300]
 
 
-def ask(prompt, key):
+def ask(prompt, key, tries=3):
+    """Retry overload (503), rate limit (429) and timeouts with backoff."""
+    for i in range(tries):
+        try:
+            return _ask(prompt, key)
+        except (TimeoutError, urllib.error.HTTPError) as e:
+            if i == tries - 1 or getattr(e, "code", 503) not in (429, 503):
+                raise
+            time.sleep(10 * (i + 1))
+
+
+def _ask(prompt, key):
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}],
                        "generationConfig": {"temperature": 0, "responseMimeType": "application/json",
                                             "responseSchema": SCHEMA}}).encode()
