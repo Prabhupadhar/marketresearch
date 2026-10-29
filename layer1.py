@@ -18,6 +18,7 @@ import pandas as pd
 import yfinance as yf
 from hmmlearn.hmm import GaussianHMM
 
+from layer2 import features, stress_prob, walk_forward
 from scorecard import calibration, compare, score
 
 # ponytail: today's large caps, so the history carries survivorship bias; fine for
@@ -31,7 +32,7 @@ INDEX = {"US": "^GSPC", "India": "^NSEI"}
 HORIZON = 2          # trading days
 MOMENTUM_DAYS = 60   # ~12 weeks
 SCORE_FROM = "2010-01-01"
-MODELS = ["base_rate", "momentum"]
+MODELS = ["base_rate", "momentum", "gbm"]
 RESULTS = Path(os.environ.get("RESULTS_DIR", "."))
 LOG = RESULTS / "forecasts" / "log.csv"
 
@@ -119,13 +120,17 @@ def forward_scores(closes):
                                                 columns="model", values="p").reset_index()
 
 
-def scorecard_section(df, title):
+def scorecard_section(df, title, by=("market",)):
     out = []
-    for market, g in [("All", df), *df.groupby("market")]:
+    groups = [("All", df)] + [(name, g) for col in by for name, g in df.groupby(col)]
+    for name, g in groups:
+        g = g.dropna(subset=MODELS)  # forecasts logged before a model existed are skipped
         s = pd.DataFrame({m: score(g.assign(p=g[m])) for m in MODELS}).T
-        gain, pval = compare(g, "momentum", "base_rate", lags=HORIZON - 1)
-        out += [f"## {title}: {market}", "", "```", s.round(4).to_string(), "```",
-                f"momentum vs base_rate: Brier gain per day {gain:+.5f}, p = {pval:.3f}", ""]
+        out += [f"## {title}: {name}", "", "```", s.round(4).to_string(), "```"]
+        for m in MODELS[1:]:
+            gain, pval = compare(g, m, "base_rate", lags=HORIZON - 1)
+            out.append(f"{m} vs base_rate: Brier gain per day {gain:+.5f}, p = {pval:.3f}  ")
+        out.append("")
     return out
 
 
@@ -133,17 +138,21 @@ def main():
     rows, closes, out = [], {}, ["# Layer 1 report", "", f"Horizon: {HORIZON} trading days.", ""]
     for market, tickers in MARKETS.items():
         c = daily_closes(tickers)
+        idx = c[INDEX[market]].dropna()
+        stress = stress_prob(idx)
         for t in tickers:
             s = c[t].dropna()
             if s.empty:
                 raise SystemExit(f"no data for {t}")  # fail loudly, the loop emails on failure
             closes[t] = s
-            f = forecasts(s).assign(ticker=t, market=market)
+            f = forecasts(s).join(features(s, idx, stress, market == "India")).assign(ticker=t, market=market)
             rows.append(f.rename_axis("date").reset_index())
         out += [f"## {market} regime (as of {closes[INDEX[market]].index[-1]:%Y-%m-%d})", "", "```",
                 regimes(closes[INDEX[market]]).round(3).to_string(), "```", ""]
 
-    df = pd.concat(rows)
+    df = pd.concat(rows, ignore_index=True)
+    df["gbm"] = walk_forward(df, int(SCORE_FROM[:4]))
+    df["regime"] = np.where(df["stress"] > 0.5, "stressed", "calm")
     live = df.groupby("ticker").tail(1).dropna(subset=MODELS)
     added = append_log(live)
     back = df[df["date"] >= SCORE_FROM].dropna(subset=["y", *MODELS])
@@ -155,9 +164,9 @@ def main():
     else:
         out += scorecard_section(fwd, "Forward scorecard (logged before outcome)")
 
-    out += scorecard_section(back, f"Backtest ({SCORE_FROM[:4]} on)")
-    out += ["## Momentum calibration (backtest, all)", "", "```",
-            calibration(back.assign(p=back["momentum"])).round(3).to_string(), "```", "",
+    out += scorecard_section(back, f"Backtest ({SCORE_FROM[:4]} on, walk-forward)", by=("market", "regime"))
+    out += ["## GBM calibration (backtest, all)", "", "```",
+            calibration(back.assign(p=back["gbm"])).round(3).to_string(), "```", "",
             f"## Latest forecasts: P(up over next {HORIZON} trading days), {added} new rows logged", "", "```",
             live.assign(date=live["date"].dt.date).set_index(["market", "ticker"])[["date", *MODELS]]
                 .round(3).to_string(), "```"]

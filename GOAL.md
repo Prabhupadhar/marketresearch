@@ -56,6 +56,22 @@ claiming much more is probably leaking the future.
 
 1. ✅ **Layer 1**: baselines, regime model, scorecard (`layer1.py`)
 2. ✅ **Loop**: GitHub Actions after every trading day, append-only forecast log on the `results` branch
-3. **Layer 2**: gradient-boosting model with walk-forward validation, a walk-forward regime model, and the scorecard split by regime
+3. ✅ **Layer 2**: gradient-boosting model with walk-forward validation, a walk-forward regime model, and the scorecard split by regime
 4. **Layer 3**: AI agents (TradingAgents on free models plus a market-conditions agent) writing to a dated forecast log
 5. **Reviews** at 26 and 52 forward weeks against this file
+
+## Experiment log
+
+Every variant tried is listed here, because trying many and keeping the best is
+how backtests lie. A result is judged against how many attempts it took.
+
+| # | Date | Experiment | Backtest result (2-day, 2010 on) | Decision |
+|---|---|---|---|---|
+| 1 | 2026-10-29 | 12-week momentum, weekly horizon | Worse than base rate, India p = 0.015 | Superseded by #2 |
+| 2 | 2026-10-29 | 60-day momentum, 2-day horizon | Brier 0.2493, same as base rate, p = 0.18 | Kept as baseline |
+| 3 | 2026-10-29 | GBM on 12 price/regime features, annual walk-forward, no tuning | Brier 0.2497, **worse** than base rate (p = 0.022), overconfident | Kept in the forward log for the kill rule; not tuned |
+
+**Lesson from #3:** price-only features at a 2-day horizon carry no usable edge
+for these large caps. An edge has to come from information that isn't in the
+price history (news, fundamentals, flows, events) or from horizons where
+documented effects exist.
