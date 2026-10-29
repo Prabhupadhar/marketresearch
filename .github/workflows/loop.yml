@@ -1,0 +1,79 @@
+# Every trading day after the US and India closes: forecast, score, report.
+# The forecast job runs our code and third-party packages with a read-only token.
+# The publish job runs only git, writes only to the results branch, and refuses
+# any change that rewrites an already-logged forecast.
+name: loop
+
+on:
+  schedule:
+    - cron: "47 22 * * 1-5"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: loop
+  cancel-in-progress: false
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true # first run: the results branch does not exist yet
+        with:
+          ref: results
+          path: results
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python test_layer1.py
+      - run: python layer1.py
+        env:
+          RESULTS_DIR: results
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results
+          path: |
+            results/forecasts
+            results/reports
+          retention-days: 7
+
+  publish:
+    needs: forecast
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Switch to results branch
+        run: git fetch origin results && git switch results || git switch --orphan results
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: results
+          path: ${{ runner.temp }}/new
+      - name: Refuse to rewrite logged forecasts
+        env:
+          NEW: ${{ runner.temp }}/new
+        run: |
+          if [ -f forecasts/log.csv ]; then
+            cmp -n "$(stat -c%s forecasts/log.csv)" forecasts/log.csv "$NEW/forecasts/log.csv" \
+              || { echo "::error::forecast log was rewritten, not appended"; exit 1; }
+          fi
+          rm -rf forecasts reports && cp -r "$NEW/forecasts" "$NEW/reports" .
+      - name: Commit and push
+        run: |
+          git add forecasts reports
+          git diff --cached --quiet && exit 0
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "results $(date -u +%Y-%m-%d)"
+          git push origin results

@@ -1,4 +1,4 @@
-"""Scoring for probability forecasts. A forecast is P(up next period); y is 1 if it went up."""
+"""Scoring for probability forecasts. A forecast is P(up over the horizon); y is 1 if it went up."""
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
@@ -16,15 +16,18 @@ def score(df):
     return {"n": len(y), "hit_rate": ((p >= 0.5) == y).mean(), "brier": b, "brier_skill": 1 - b / ref}
 
 
-def compare(df, a, b):
-    """Diebold-Mariano style test: is model a's Brier loss lower than model b's?
+def compare(df, a, b, lags=0):
+    """Diebold-Mariano test: is model a's Brier loss lower than model b's?
 
-    Losses are averaged per date first, because tickers in the same week move
-    together and are not independent samples. Returns (mean weekly gain, two-sided p).
+    Losses are averaged per date first, because tickers on the same day move
+    together and are not independent samples. Forecasts over h days overlap,
+    so the variance uses Newey-West with lags = h - 1.
+    Returns (mean daily gain, two-sided p).
     """
-    d = pd.Series(brier(df[b], df["y"]) - brier(df[a], df["y"])).groupby(df["date"].to_numpy()).mean()
-    t = d.mean() / (d.std(ddof=1) / np.sqrt(len(d)))
-    return d.mean(), 2 * norm.sf(abs(t))
+    d = pd.Series(brier(df[b], df["y"]) - brier(df[a], df["y"])).groupby(df["date"].to_numpy()).mean().to_numpy()
+    n, e = len(d), d - d.mean()
+    var = e @ e / n + 2 * sum((1 - k / (lags + 1)) * (e[k:] @ e[:-k]) / n for k in range(1, lags + 1))
+    return d.mean(), 2 * norm.sf(abs(d.mean() / np.sqrt(var / n)))
 
 
 def calibration(df, bins=(0, 0.45, 0.5, 0.55, 0.6, 1)):
