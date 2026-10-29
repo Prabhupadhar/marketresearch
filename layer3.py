@@ -51,7 +51,7 @@ SCHEMA = {"type": "OBJECT", "properties": {"p_up": {"type": "NUMBER"}, "reason":
 
 def _get(url, data=None, headers=None):
     req = urllib.request.Request(url, data=data, headers={"User-Agent": "Mozilla/5.0", **(headers or {})})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=45) as r:
         return r.read()
 
 
@@ -101,13 +101,19 @@ def ask(prompt, key):
     return parse(out["candidates"][0]["content"]["parts"][0]["text"])
 
 
-def forecast(live, horizon, now):
-    """P(up) per live row from Gemini; rows that fail stay NaN, so the math layers still log."""
+def forecast(live, horizon, now, budget=600):
+    """P(up) per live row from Gemini; rows that fail stay NaN, so the math layers still log.
+
+    Stops asking after `budget` seconds so a slow model can't time out the whole run.
+    """
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         return {}, "no GEMINI_API_KEY, AI layer skipped"
-    out, errors = {}, []
+    out, errors, start = {}, [], time.monotonic()
     for _, r in live.iterrows():
+        if time.monotonic() - start > budget:
+            errors.append(f"time budget spent, {len(live) - len(out) - len(errors)} tickers skipped")
+            break
         try:
             news = headlines(r["ticker"], r["market"], news_cutoff(r["date"], r["market"], now))
             ctx = {**r, "name": NAMES[r["ticker"]], "horizon": horizon, "date": f"{r['date']:%Y-%m-%d}",
