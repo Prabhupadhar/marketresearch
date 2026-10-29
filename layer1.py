@@ -18,6 +18,7 @@ import pandas as pd
 import yfinance as yf
 from hmmlearn.hmm import GaussianHMM
 
+import layer3
 from layer2 import features, stress_prob, walk_forward
 from scorecard import calibration, compare, score
 
@@ -32,7 +33,8 @@ INDEX = {"US": "^GSPC", "India": "^NSEI"}
 HORIZON = 2          # trading days
 MOMENTUM_DAYS = 60   # ~12 weeks
 SCORE_FROM = "2010-01-01"
-MODELS = ["base_rate", "momentum", "gbm"]
+MATH = ["base_rate", "momentum", "gbm"]  # backtestable: they only see data up to each date
+MODELS = MATH + ["ai"]  # ai is scored forward only
 RESULTS = Path(os.environ.get("RESULTS_DIR", "."))
 LOG = RESULTS / "forecasts" / "log.csv"
 
@@ -96,7 +98,7 @@ def regimes(close, n=2):
 
 def append_log(live):
     """Append today's forecasts; never rewrite what is already logged."""
-    rows = live.melt(["date", "ticker", "market"], MODELS, "model", "p")
+    rows = live.melt(["date", "ticker", "market"], [m for m in MODELS if m in live], "model", "p").dropna(subset=["p"])
     rows.insert(0, "made_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"))
     rows["date"] = rows["date"].dt.strftime("%Y-%m-%d")
     rows["horizon"] = HORIZON
@@ -123,12 +125,13 @@ def forward_scores(closes):
 def scorecard_section(df, title, by=("market",)):
     out = []
     groups = [("All", df)] + [(name, g) for col in by for name, g in df.groupby(col)]
+    models = [m for m in MODELS if m in df]
     for name, g in groups:
-        g = g.dropna(subset=MODELS)  # forecasts logged before a model existed are skipped
-        s = pd.DataFrame({m: score(g.assign(p=g[m])) for m in MODELS}).T
+        # each model is scored on the days it has forecasts; models started at different times
+        s = pd.DataFrame({m: score(g.dropna(subset=[m]).assign(p=lambda x: x[m])) for m in models}).T
         out += [f"## {title}: {name}", "", "```", s.round(4).to_string(), "```"]
-        for m in MODELS[1:]:
-            gain, pval = compare(g, m, "base_rate", lags=HORIZON - 1)
+        for m in models[1:]:
+            gain, pval = compare(g.dropna(subset=[m, "base_rate"]), m, "base_rate", lags=HORIZON - 1)
             out.append(f"{m} vs base_rate: Brier gain per day {gain:+.5f}, p = {pval:.3f}  ")
         out.append("")
     return out
@@ -153,9 +156,11 @@ def main():
     df = pd.concat(rows, ignore_index=True)
     df["gbm"] = walk_forward(df, int(SCORE_FROM[:4]))
     df["regime"] = np.where(df["stress"] > 0.5, "stressed", "calm")
-    live = df.groupby("ticker").tail(1).dropna(subset=MODELS)
+    live = df.groupby("ticker").tail(1).dropna(subset=MATH)
+    ai, status = layer3.forecast(live, HORIZON, datetime.now(timezone.utc))
+    live["ai"] = live["ticker"].map({t: v[0] for t, v in ai.items()})
     added = append_log(live)
-    back = df[df["date"] >= SCORE_FROM].dropna(subset=["y", *MODELS])
+    back = df[df["date"] >= SCORE_FROM].dropna(subset=["y", *MATH])
 
     fwd = forward_scores(closes)
     if fwd is None or fwd["date"].nunique() < 20:
@@ -169,7 +174,9 @@ def main():
             calibration(back.assign(p=back["gbm"])).round(3).to_string(), "```", "",
             f"## Latest forecasts: P(up over next {HORIZON} trading days), {added} new rows logged", "", "```",
             live.assign(date=live["date"].dt.date).set_index(["market", "ticker"])[["date", *MODELS]]
-                .round(3).to_string(), "```"]
+                .round(3).to_string(), "```", "",
+            f"## AI analyst ({layer3.MODEL}): {status}", ""]
+    out += [f"- **{t}** {p:.2f} ({n} headlines): {why}" for t, (p, why, n) in ai.items()]
 
     (RESULTS / "reports").mkdir(parents=True, exist_ok=True)
     (RESULTS / "reports" / "layer1.md").write_text("\n".join(out) + "\n")

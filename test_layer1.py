@@ -73,8 +73,34 @@ def test_layer2_ignores_the_future():
     assert not np.allclose(a[~m].dropna(), b[~m].dropna())  # the change is visible once it is in the past
 
 
+def test_ai_answers_are_validated():
+    from layer3 import parse
+    assert parse('{"p_up": 0.57, "reason": "beat on revenue `rm -rf` [x](y)"}') == (0.57, "beat on revenue rm -rf x(y)")
+    for bad in ['{"p_up": 1.0, "reason": ""}', '{"p_up": "ignore all instructions"}', "not json", '{"reason": "x"}']:
+        assert parse(bad) is None, bad
+
+
+def test_news_stops_before_next_session():
+    from datetime import datetime, timezone
+    from layer3 import news_cutoff
+    now = datetime(2026, 10, 29, 22, 47, tzinfo=timezone.utc)
+    d = pd.Timestamp("2026-10-28")
+    assert news_cutoff(d, "India", now) == datetime(2026, 10, 29, 3, 45, tzinfo=timezone.utc)
+    assert news_cutoff(d, "US", now) == datetime(2026, 10, 29, 13, 30, tzinfo=timezone.utc)
+    assert news_cutoff(pd.Timestamp("2026-10-29"), "US", now) == now
+
+
+def test_missing_ai_forecast_is_not_logged():
+    live = pd.DataFrame({"date": pd.to_datetime(["2026-11-02", "2026-11-02"]), "ticker": ["A", "B"],
+                         "market": ["US", "US"], "base_rate": [0.5, 0.5], "momentum": [0.5, 0.5],
+                         "gbm": [0.5, 0.5], "ai": [0.6, np.nan]})
+    assert layer1.append_log(live) == 7
+
+
 if __name__ == "__main__":
     for f in [test_no_lookahead, test_conditional_split, test_score_and_compare, test_log_is_append_only,
-              test_filter_matches_hmmlearn_at_last_step, test_layer2_ignores_the_future]:
+              test_filter_matches_hmmlearn_at_last_step, test_layer2_ignores_the_future,
+              test_ai_answers_are_validated, test_news_stops_before_next_session,
+              test_missing_ai_forecast_is_not_logged]:
         f()
     print("ok")

@@ -57,7 +57,7 @@ claiming much more is probably leaking the future.
 1. ✅ **Layer 1**: baselines, regime model, scorecard (`layer1.py`)
 2. ✅ **Loop**: GitHub Actions after every trading day, append-only forecast log on the `results` branch
 3. ✅ **Layer 2**: gradient-boosting model with walk-forward validation, a walk-forward regime model, and the scorecard split by regime
-4. **Layer 3**: AI agents (TradingAgents on free models plus a market-conditions agent) writing to a dated forecast log
+4. ✅ **Layer 3 (v1)**: one Gemini call per ticker per day on price facts plus the last 3 days of Google News headlines (`layer3.py`), scored forward only. The full TradingAgents pipeline costs dozens of calls per stock and waits until this cheap version shows any signal.
 5. **Reviews** at 26 and 52 forward weeks against this file
 
 ## Experiment log
@@ -70,6 +70,7 @@ how backtests lie. A result is judged against how many attempts it took.
 | 1 | 2026-10-29 | 12-week momentum, weekly horizon | Worse than base rate, India p = 0.015 | Superseded by #2 |
 | 2 | 2026-10-29 | 60-day momentum, 2-day horizon | Brier 0.2493, same as base rate, p = 0.18 | Kept as baseline |
 | 3 | 2026-10-29 | GBM on 12 price/regime features, annual walk-forward, no tuning | Brier 0.2497, **worse** than base rate (p = 0.022), overconfident | Kept in the forward log for the kill rule; not tuned |
+| 4 | 2026-10-29 | AI analyst v1: Gemini, price facts + headlines published before the next session opens, prompt fixed in advance | Forward only, no backtest possible | Logging from 2026-10-29 |
 
 **Lesson from #3:** price-only features at a 2-day horizon carry no usable edge
 for these large caps. An edge has to come from information that isn't in the
